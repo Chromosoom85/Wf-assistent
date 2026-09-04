@@ -150,18 +150,18 @@ with tab_moves:
     )
 
     default_board_text = "\n".join(["." * BOARD_SIZE for _ in range(BOARD_SIZE)])
+    st.session_state.setdefault("board_text_input", default_board_text)
     board_text = st.text_area(
         "Bordstatus (15 regels × 15 tekens)",
-        value=st.session_state.get("board_text_input", default_board_text),
         height=280,
         key="board_text_input",
     )
 
     board_preview, board_preview_error = parse_board_text(board_text)
 
+    st.session_state.setdefault("rack_text_input", "")
     rack_input = st.text_input(
         "Jouw rack (7 letters, gebruik ? voor een blanco)",
-        value=st.session_state.get("rack_text_input", ""),
         key="rack_text_input",
     ).upper()
 
