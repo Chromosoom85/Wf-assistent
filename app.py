@@ -31,6 +31,7 @@ from board_skeleton import Board, BOARD_SIZE
 from move_generator import generate_moves
 from dictionary_loader import download_opentaal_wordlist
 from strategy import analyze_moves, rack_bingo_potential, find_words_from_letters
+from board_ocr import read_board_from_image, read_rack_from_image, board_to_text, BoardReadError
 
 st.set_page_config(page_title="Wordfeud AI Assistant", page_icon="🟩", layout="wide")
 
@@ -102,6 +103,45 @@ tab_moves, tab_lexicon, tab_tiles, tab_about = st.tabs(
 # TAB 0: Zetten zoeken (de echte move-generator)
 # ------------------------------------------------------------------
 with tab_moves:
+    st.subheader("📷 Bord inlezen vanaf screenshot")
+    st.caption(
+        "Upload een screenshot van je Wordfeud-potje (bord + rack zichtbaar) "
+        "-- dit vult het bord en je rack automatisch in. Controleer het "
+        "resultaat altijd even voordat je op 'Zoek beste zetten' drukt: "
+        "letterherkenning is een beste-poging, geen garantie."
+    )
+    uploaded_screenshot = st.file_uploader(
+        "Screenshot uploaden (.png of .jpg)", type=["png", "jpg", "jpeg"]
+    )
+    if uploaded_screenshot is not None:
+        if st.button("🔍 Lees bord en rack uit deze screenshot"):
+            tmp_path = f"/tmp/{uploaded_screenshot.name}"
+            with open(tmp_path, "wb") as f:
+                f.write(uploaded_screenshot.getbuffer())
+
+            with st.spinner("Bord en rack aan het herkennen..."):
+                try:
+                    ocr_board, uncertain_board = read_board_from_image(tmp_path)
+                    st.session_state["board_text_input"] = board_to_text(ocr_board)
+                    n_uncertain_board = sum(sum(row) for row in uncertain_board)
+
+                    ocr_rack, uncertain_rack = read_rack_from_image(tmp_path)
+                    st.session_state["rack_text_input"] = ocr_rack
+                    n_uncertain_rack = sum(uncertain_rack)
+
+                    msg = "✅ Bord en rack ingelezen."
+                    if n_uncertain_board or n_uncertain_rack:
+                        msg += (
+                            f" ⚠️ {n_uncertain_board} bordvakje(s) en "
+                            f"{n_uncertain_rack} rackletter(s) met lage "
+                            f"betrouwbaarheid -- controleer hieronder even."
+                        )
+                    st.success(msg)
+                except BoardReadError as e:
+                    st.error(f"Kon de screenshot niet verwerken: {e}")
+            st.rerun()
+
+    st.divider()
     st.subheader("Bord invoeren")
     st.caption(
         "Voer het bord in als 15 regels van 15 tekens. Gebruik een punt "
@@ -112,7 +152,7 @@ with tab_moves:
     default_board_text = "\n".join(["." * BOARD_SIZE for _ in range(BOARD_SIZE)])
     board_text = st.text_area(
         "Bordstatus (15 regels × 15 tekens)",
-        value=st.session_state.get("board_text", default_board_text),
+        value=st.session_state.get("board_text_input", default_board_text),
         height=280,
         key="board_text_input",
     )
@@ -121,7 +161,7 @@ with tab_moves:
 
     rack_input = st.text_input(
         "Jouw rack (7 letters, gebruik ? voor een blanco)",
-        value=st.session_state.get("rack_input", ""),
+        value=st.session_state.get("rack_text_input", ""),
         key="rack_text_input",
     ).upper()
 

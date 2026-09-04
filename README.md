@@ -17,7 +17,9 @@ deze backend aanspreekt) volgt later.
 | `lexicon_manager.py` | Whitelist/blacklist-beheer (persistent op schijf) |
 | `tile_tracker.py` | Houdt de 104 Nederlandse Wordfeud-stenen bij, incl. eindspel-deductie van het tegenstanderrack |
 | `dictionary_loader.py` | Downloadt de officiële OpenTaal-woordenlijst (>400.000 woorden) en zet 'm om naar bordklare vorm |
+| `board_ocr.py` | Leest een screenshot van een lopend potje uit (bord + rack) via kleurclassificatie + OCR |
 | `requirements.txt` | Python-dependencies voor Streamlit Cloud |
+| `packages.txt` | Systeem-dependency (`tesseract-ocr`) die Streamlit Cloud via apt-get installeert -- nodig voor de screenshot-functie |
 
 ## Lokaal draaien
 

@@ -13,7 +13,7 @@ straks 1-op-1 op aansluit.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, InitVar
 from enum import Enum
 
 BOARD_SIZE = 15
@@ -63,25 +63,31 @@ class Cell:
 
 @dataclass
 class Board:
-    grid: list[list[Cell]] = field(
-        default_factory=lambda: [
-            [Cell(bonus=default_bonus_grid()[r][c]) for c in range(BOARD_SIZE)]
+    bonus_grid_override: InitVar[list[list["Bonus"]] | None] = None
+    grid: list[list[Cell]] = field(init=False)
+
+    def __post_init__(self, bonus_grid_override):
+        layout = bonus_grid_override if bonus_grid_override is not None else default_bonus_grid()
+        self.grid = [
+            [Cell(bonus=layout[r][c]) for c in range(BOARD_SIZE)]
             for r in range(BOARD_SIZE)
         ]
-    )
 
     def is_empty(self) -> bool:
         return all(cell.letter is None for row in self.grid for cell in row)
 
     def clone(self) -> "Board":
         """Diepe kopie -- nodig voor lookahead-analyse (2-ply/eindspel) die
-        een zet 'uitprobeert' zonder het echte bord aan te passen."""
-        new_board = Board()
+        een zet 'uitprobeert' zonder het echte bord aan te passen. Neemt
+        het EIGEN bonusgrid over (niet het standaardgrid), belangrijk
+        zodra het bord via OCR met een willekeurige/afwijkende
+        bonus-layout is opgebouwd."""
+        own_bonus_grid = [[self.grid[r][c].bonus for c in range(BOARD_SIZE)] for r in range(BOARD_SIZE)]
+        new_board = Board(bonus_grid_override=own_bonus_grid)
         for r in range(BOARD_SIZE):
             for c in range(BOARD_SIZE):
                 new_board.grid[r][c].letter = self.grid[r][c].letter
                 new_board.grid[r][c].is_blank = self.grid[r][c].is_blank
-                # bonus blijft hetzelfde object/waarde, hoeft niet gekopieerd
         return new_board
 
     def place_word(self, word: str, row: int, col: int, horizontal: bool) -> None:
