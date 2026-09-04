@@ -104,6 +104,31 @@ tab_moves, tab_lexicon, tab_tiles, tab_about = st.tabs(
 # TAB 0: Zetten zoeken (de echte move-generator)
 # ------------------------------------------------------------------
 with tab_moves:
+    if not st.session_state.get("full_dict_loaded", False):
+        st.error(
+            f"⚠️ **Je gebruikt nog het kleine DEMO-woordenboek "
+            f"({lex.stats()['base_dictionary']} woorden)** -- daarom vindt "
+            f"de zetgenerator geen goede woorden! Klik hieronder om de "
+            f"volledige Nederlandse woordenlijst (>400.000 woorden) te laden."
+        )
+        if st.button("📥 Laad nu de volledige woordenlijst", type="primary"):
+            with st.spinner("Bezig met downloaden en verwerken (kan even duren)..."):
+                try:
+                    full_words = _load_full_dutch_dictionary()
+                    if full_words:
+                        lex.set_base_dictionary(full_words)
+                        st.session_state["full_dict_loaded"] = True
+                        st.success(f"{len(full_words):,} woorden geladen! Klaar om te zoeken.")
+                        st.rerun()
+                    else:
+                        st.error(
+                            "Downloaden leverde geen woorden op -- check je "
+                            "internetverbinding en probeer opnieuw."
+                        )
+                except Exception as e:
+                    st.error(f"Downloaden mislukt: {e}")
+        st.divider()
+
     st.subheader("📷 Bord inlezen vanaf screenshot")
     st.caption(
         "Upload een screenshot van je Wordfeud-potje (bord + rack zichtbaar) "
@@ -114,11 +139,8 @@ with tab_moves:
     uploaded_screenshot = st.file_uploader(
         "Screenshot uploaden (.png of .jpg)", type=["png", "jpg", "jpeg"]
     )
-    st.caption(f"🔧 DEBUG: uploaded_screenshot = {uploaded_screenshot!r}")
 
     if uploaded_screenshot is not None:
-        st.caption(f"🔧 DEBUG: bestandsnaam={uploaded_screenshot.name}, "
-                   f"grootte={uploaded_screenshot.size} bytes")
         st.image(uploaded_screenshot, caption="Geüpload bestand", width=200)
 
         # Verwerk alleen automatisch als dit een NIEUW bestand is (anders
@@ -126,29 +148,21 @@ with tab_moves:
         # -- de OCR opnieuw draaien en je handmatige correcties overschrijven).
         file_signature = f"{uploaded_screenshot.name}-{uploaded_screenshot.size}"
         already_processed = st.session_state.get("_last_ocr_signature") == file_signature
-        st.caption(f"🔧 DEBUG: signature={file_signature}, already_processed={already_processed}, "
-                   f"laatst_opgeslagen={st.session_state.get('_last_ocr_signature')!r}")
 
         if not already_processed:
-            st.caption("🔧 DEBUG: start verwerking...")
             tmp_path = f"/tmp/{uploaded_screenshot.name}"
             with open(tmp_path, "wb") as f:
                 f.write(uploaded_screenshot.getbuffer())
-            st.caption(f"🔧 DEBUG: bestand weggeschreven naar {tmp_path}")
 
             with st.spinner("Bord en rack aan het herkennen..."):
                 try:
-                    st.caption("🔧 DEBUG: read_board_from_image aanroepen...")
                     ocr_board, uncertain_board = read_board_from_image(tmp_path)
-                    st.caption("🔧 DEBUG: bord gelezen, resultaat opslaan...")
                     st.session_state["board_text_input"] = board_to_text(ocr_board)
                     n_uncertain_board = sum(sum(row) for row in uncertain_board)
 
-                    st.caption("🔧 DEBUG: read_rack_from_image aanroepen...")
                     ocr_rack, uncertain_rack = read_rack_from_image(tmp_path)
                     st.session_state["rack_text_input"] = ocr_rack
                     n_uncertain_rack = sum(uncertain_rack)
-                    st.caption(f"🔧 DEBUG: klaar, rack={ocr_rack!r}")
 
                     st.session_state["_last_ocr_signature"] = file_signature
                     st.session_state["_last_ocr_message"] = (
@@ -169,20 +183,15 @@ with tab_moves:
                 except Exception as e:
                     # Vang ALLES af (bv. ontbrekende tesseract-systeembinary
                     # op de server) zodat je nooit met een stille, lege
-                    # pagina blijft zitten -- dit is precies zo'n fout die
-                    # anders geen zichtbare foutmelding gaf.
+                    # pagina blijft zitten.
                     st.session_state["_last_ocr_signature"] = file_signature
                     st.session_state["_last_ocr_message"] = (
                         "error",
                         f"Onverwachte fout tijdens het inlezen: "
                         f"{type(e).__name__}: {e}. Check 'Manage app' → "
-                        f"logs als dit blijft gebeuren (mogelijk ontbreekt "
-                        f"de tesseract-ocr systeembinary op de server).",
+                        f"logs als dit blijft gebeuren.",
                     )
-            # TIJDELIJK UITGEZET VOOR DEBUGGEN -- normaal staat hier st.rerun()
-            # zodat de tekstvelden hun nieuwe standaardwaarde oppikken. Nu
-            # laten we 'm weg zodat je de DEBUG-regels hierboven kunt lezen.
-            st.caption("🔧 DEBUG: klaar met verwerken (rerun is nu tijdelijk uitgezet)")
+            st.rerun()
 
     last_msg = st.session_state.get("_last_ocr_message")
     if last_msg:
