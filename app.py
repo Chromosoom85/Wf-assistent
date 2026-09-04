@@ -106,15 +106,24 @@ with tab_moves:
     st.subheader("📷 Bord inlezen vanaf screenshot")
     st.caption(
         "Upload een screenshot van je Wordfeud-potje (bord + rack zichtbaar) "
-        "-- dit vult het bord en je rack automatisch in. Controleer het "
-        "resultaat altijd even voordat je op 'Zoek beste zetten' drukt: "
-        "letterherkenning is een beste-poging, geen garantie."
+        "-- dit vult het bord en je rack automatisch in zodra je een bestand "
+        "kiest. Controleer het resultaat altijd even voordat je op 'Zoek "
+        "beste zetten' drukt: letterherkenning is een beste-poging, geen garantie."
     )
     uploaded_screenshot = st.file_uploader(
         "Screenshot uploaden (.png of .jpg)", type=["png", "jpg", "jpeg"]
     )
+
     if uploaded_screenshot is not None:
-        if st.button("🔍 Lees bord en rack uit deze screenshot"):
+        st.image(uploaded_screenshot, caption="Geüpload bestand", width=200)
+
+        # Verwerk alleen automatisch als dit een NIEUW bestand is (anders
+        # zou elke rerun -- ook na het aanpassen van rack/bord met de hand
+        # -- de OCR opnieuw draaien en je handmatige correcties overschrijven).
+        file_signature = f"{uploaded_screenshot.name}-{uploaded_screenshot.size}"
+        already_processed = st.session_state.get("_last_ocr_signature") == file_signature
+
+        if not already_processed:
             tmp_path = f"/tmp/{uploaded_screenshot.name}"
             with open(tmp_path, "wb") as f:
                 f.write(uploaded_screenshot.getbuffer())
@@ -129,17 +138,41 @@ with tab_moves:
                     st.session_state["rack_text_input"] = ocr_rack
                     n_uncertain_rack = sum(uncertain_rack)
 
-                    msg = "✅ Bord en rack ingelezen."
-                    if n_uncertain_board or n_uncertain_rack:
-                        msg += (
+                    st.session_state["_last_ocr_signature"] = file_signature
+                    st.session_state["_last_ocr_message"] = (
+                        "success",
+                        "✅ Bord en rack ingelezen."
+                        + (
                             f" ⚠️ {n_uncertain_board} bordvakje(s) en "
                             f"{n_uncertain_rack} rackletter(s) met lage "
                             f"betrouwbaarheid -- controleer hieronder even."
-                        )
-                    st.success(msg)
+                            if (n_uncertain_board or n_uncertain_rack) else ""
+                        ),
+                    )
                 except BoardReadError as e:
-                    st.error(f"Kon de screenshot niet verwerken: {e}")
+                    st.session_state["_last_ocr_signature"] = file_signature
+                    st.session_state["_last_ocr_message"] = (
+                        "error", f"Kon de screenshot niet verwerken: {e}"
+                    )
+                except Exception as e:
+                    # Vang ALLES af (bv. ontbrekende tesseract-systeembinary
+                    # op de server) zodat je nooit met een stille, lege
+                    # pagina blijft zitten -- dit is precies zo'n fout die
+                    # anders geen zichtbare foutmelding gaf.
+                    st.session_state["_last_ocr_signature"] = file_signature
+                    st.session_state["_last_ocr_message"] = (
+                        "error",
+                        f"Onverwachte fout tijdens het inlezen: "
+                        f"{type(e).__name__}: {e}. Check 'Manage app' → "
+                        f"logs als dit blijft gebeuren (mogelijk ontbreekt "
+                        f"de tesseract-ocr systeembinary op de server).",
+                    )
             st.rerun()
+
+    last_msg = st.session_state.get("_last_ocr_message")
+    if last_msg:
+        kind, text = last_msg
+        (st.success if kind == "success" else st.error)(text)
 
     st.divider()
     st.subheader("Bord invoeren")
