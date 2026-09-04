@@ -32,6 +32,7 @@ from move_generator import generate_moves
 from dictionary_loader import download_opentaal_wordlist
 from strategy import analyze_moves, rack_bingo_potential, find_words_from_letters
 from board_ocr import read_board_from_image, read_rack_from_image, board_to_text, BoardReadError
+from board_svg import board_to_svg, move_to_svg
 
 st.set_page_config(page_title="Wordfeud AI Assistant", page_icon="🟩", layout="wide")
 
@@ -206,6 +207,18 @@ with tab_moves:
 
     board_preview, board_preview_error = parse_board_text(board_text)
 
+    st.markdown("**Visuele weergave van je bord:**")
+    if board_preview_error:
+        st.warning(f"Kan geen preview tonen: {board_preview_error}")
+    else:
+        st.caption(
+            "⚠️ Toont de STANDAARD-bonuslayout. Jouw echte potje kan een "
+            "willekeurig bord hebben (Wordfeud gebruikt dat vaak) -- de "
+            "vakjes hieronder komen dan niet 1-op-1 overeen. De letters "
+            "die je hier ziet staan kloppen wel altijd."
+        )
+        st.markdown(board_to_svg(board_preview), unsafe_allow_html=True)
+
     st.session_state.setdefault("rack_text_input", "")
     rack_input = st.text_input(
         "Jouw rack (7 letters, gebruik ? voor een blanco)",
@@ -325,6 +338,12 @@ with tab_moves:
                                 )
                             if m.explanation:
                                 st.caption("🧭 " + m.explanation)
+                            with st.expander("📍 Toon op bord"):
+                                st.markdown(
+                                    move_to_svg(board_preview, m),
+                                    unsafe_allow_html=True,
+                                )
+                                st.caption("Goud omrand = hier een tegel neerleggen.")
                         with col2:
                             st.metric("Score", m.raw_score)
                             if deep_analysis:
