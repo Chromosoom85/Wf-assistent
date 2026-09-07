@@ -27,7 +27,7 @@ import streamlit as st
 from lexicon_manager import LexiconManager
 from tile_tracker import TileTracker, DUTCH_TILE_POINTS
 from trie import Trie
-from board_skeleton import Board, BOARD_SIZE
+from board_skeleton import Board, BOARD_SIZE, CandidateMove
 from move_generator import generate_moves
 from dictionary_loader import download_opentaal_wordlist
 from strategy import analyze_moves, rack_bingo_potential, find_words_from_letters
@@ -200,20 +200,102 @@ with tab_moves:
 
     st.divider()
     st.subheader("Bord invoeren")
-    st.caption(
-        "Voer het bord in als 15 regels van 15 tekens. Gebruik een punt "
-        "'.' voor een leeg vakje en de letter zelf voor een bezet vakje. "
-        "Laat alles leeg voor een nieuw spel (eerste zet)."
-    )
 
     default_board_text = "\n".join(["." * BOARD_SIZE for _ in range(BOARD_SIZE)])
     st.session_state.setdefault("board_text_input", default_board_text)
-    board_text = st.text_area(
-        "Bordstatus (15 regels × 15 tekens)",
-        height=280,
-        key="board_text_input",
+    current_board_text = st.session_state["board_text_input"]
+    board_preview, board_preview_error = parse_board_text(current_board_text)
+
+    st.markdown("**✍️ Woord op het bord zetten** (aanbevolen — geen getik in een tekstgrid)")
+    st.caption(
+        "Geef aan waar een woord ligt: rij, kolom, richting, en het woord "
+        "zelf. Werkt voor je eigen zetten én voor die van je tegenstander "
+        "-- vink dan 'dit is mijn eigen zet' uit zodat je rack niet wordt "
+        "aangepast."
     )
 
+    col_row, col_col, col_dir = st.columns(3)
+    with col_row:
+        place_row = st.number_input(
+            "Rij (1-15)", min_value=1, max_value=BOARD_SIZE, value=8, key="place_row"
+        )
+    with col_col:
+        place_col = st.number_input(
+            "Kolom (1-15)", min_value=1, max_value=BOARD_SIZE, value=8, key="place_col"
+        )
+    with col_dir:
+        place_horizontal = st.radio(
+            "Richting", ["→ rechts", "↓ omlaag"], key="place_dir"
+        ) == "→ rechts"
+
+    place_word_input = st.text_input(
+        "Woord (gebruik ? voor een blanco tegel)", key="place_word_input"
+    ).upper()
+    place_is_own_move = st.checkbox(
+        "Dit is mijn eigen zet (haal gebruikte letters van mijn rack af)",
+        value=True, key="place_is_own_move",
+    )
+
+    if place_word_input and not board_preview_error:
+        r0, c0 = int(place_row) - 1, int(place_col) - 1
+        length = len(place_word_input)
+        fits = (
+            (place_horizontal and c0 + length <= BOARD_SIZE)
+            or (not place_horizontal and r0 + length <= BOARD_SIZE)
+        )
+        if not fits:
+            st.error("Dit woord past niet meer op het bord vanaf deze positie/richting.")
+        else:
+            preview_move = CandidateMove(
+                word=place_word_input, row=r0, col=c0,
+                horizontal=place_horizontal, raw_score=0,
+            )
+            # Waarschuw (niet blokkeren) bij een botsing met een andere letter
+            cells = (
+                [(r0, c0 + i) for i in range(length)] if place_horizontal
+                else [(r0 + i, c0) for i in range(length)]
+            )
+            conflicts = [
+                (r, c) for (r, c), ch in zip(cells, place_word_input)
+                if board_preview.grid[r][c].letter not in (None, ch)
+            ]
+            if conflicts:
+                st.warning(
+                    f"⚠️ Op {len(conflicts)} vakje(s) ligt al een ANDERE letter -- "
+                    f"controleer of rij/kolom/richting kloppen."
+                )
+            st.markdown(move_to_svg(board_preview, preview_move), unsafe_allow_html=True)
+
+            if st.button("✅ Zet dit woord op het bord", type="primary"):
+                if place_is_own_move:
+                    new_board_text, new_rack = apply_move_and_consume_rack(
+                        board_preview, st.session_state.get("rack_text_input", ""),
+                        preview_move,
+                    )
+                    st.session_state["rack_text_input"] = new_rack
+                else:
+                    new_board = board_preview.clone()
+                    new_board.place_word(place_word_input, r0, c0, place_horizontal)
+                    new_board_text = board_to_text(new_board)
+                st.session_state["board_text_input"] = new_board_text
+                st.session_state.pop("_last_moves", None)
+                st.session_state.pop("_last_search_board_text", None)
+                st.session_state["place_word_input"] = ""
+                st.success("Woord op het bord gezet!")
+                st.rerun()
+
+    with st.expander("⚙️ Geavanceerd: bord direct als tekst bewerken"):
+        st.caption(
+            "Voor uitzonderingen of snel plakken van OCR-tekst die je van "
+            "mij kreeg. 15 regels van 15 tekens; punt '.' = leeg vakje."
+        )
+        board_text = st.text_area(
+            "Bordstatus (15 regels × 15 tekens)",
+            height=280,
+            key="board_text_input",
+        )
+
+    board_text = st.session_state["board_text_input"]
     board_preview, board_preview_error = parse_board_text(board_text)
 
     st.markdown("**Visuele weergave van je bord:**")
