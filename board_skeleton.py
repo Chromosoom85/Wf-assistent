@@ -34,15 +34,21 @@ def default_bonus_grid() -> list[list[Bonus]]:
     (0-indexed). Het bord is punt-symmetrisch rond het midden (7,7), dus
     we bouwen de onderste helft door de bovenste helft te spiegelen.
     """
+    # Deze layout is EMPIRISCH bevestigd via een screenshot van een echt
+    # (leeg) Wordfeud-potje, niet uit een externe bron overgenomen -- de
+    # eerder hardgecodeerde versie bleek namelijk niet te kloppen (verkeerd
+    # aantal DW/TL-vakjes). Bevestigd als de juiste standaardlayout omdat
+    # hij zowel 180-graden- als diagonaal-symmetrisch is (TW=8, DW=12,
+    # TL=20, DL=24), typisch voor een vast bordontwerp.
     code_grid = [
-        ["tw", "..", "..", "dl", "..", "..", "..", "tw", "..", "..", "..", "dl", "..", "..", "tw"],
-        ["..", "dw", "..", "..", "..", "tl", "..", "..", "..", "tl", "..", "..", "..", "dw", ".."],
+        ["tl", "..", "..", "..", "tw", "..", "..", "dl", "..", "..", "tw", "..", "..", "..", "tl"],
+        ["..", "dl", "..", "..", "..", "tl", "..", "..", "..", "tl", "..", "..", "..", "dl", ".."],
         ["..", "..", "dw", "..", "..", "..", "dl", "..", "dl", "..", "..", "..", "dw", "..", ".."],
-        ["dl", "..", "..", "dw", "..", "..", "..", "dl", "..", "..", "..", "dw", "..", "..", "dl"],
-        ["..", "..", "..", "..", "dw", "..", "..", "..", "..", "..", "dw", "..", "..", "..", ".."],
+        ["..", "..", "..", "tl", "..", "..", "..", "dw", "..", "..", "..", "tl", "..", "..", ".."],
+        ["tw", "..", "..", "..", "dw", "..", "dl", "..", "dl", "..", "dw", "..", "..", "..", "tw"],
         ["..", "tl", "..", "..", "..", "tl", "..", "..", "..", "tl", "..", "..", "..", "tl", ".."],
         ["..", "..", "dl", "..", "dl", "..", "..", "..", "..", "..", "dl", "..", "dl", "..", ".."],
-        ["tw", "..", "..", "dl", "..", "..", "..", "st", "..", "..", "..", "dl", "..", "..", "tw"],
+        ["dl", "..", "..", "dw", "..", "..", "..", "st", "..", "..", "..", "dw", "..", "..", "dl"],
     ]
     # Onderste helft = spiegeling van de bovenste 7 rijen (rij 8..14 spiegelt rij 6..0)
     full_codes = code_grid + code_grid[-2::-1]

@@ -42,24 +42,19 @@ VOORINVULT in plaats van de zetgenerator direct aan te roepen.
 
 from __future__ import annotations
 
+import colorsys
+
 import numpy as np
 from PIL import Image
 import pytesseract
 
 from board_skeleton import Board, Bonus, BOARD_SIZE
 
-# Referentiekleuren, empirisch bepaald op een echt Wordfeud-screenshot
-# (donker thema). Als jouw Wordfeud-app een ander thema gebruikt (licht
-# thema, andere huisstijl), moeten deze mogelijk opnieuw gekalibreerd
-# worden -- zie recalibrate_reference_colors() onderaan dit bestand.
-BONUS_REF_COLORS = {
-    Bonus.TW: (192, 130, 133),
-    Bonus.DW: (222, 175, 118),
-    Bonus.TL: (75, 128, 166),
-    Bonus.DL: (138, 166, 117),
-    Bonus.NONE: (42, 46, 51),
-}
-TILE_BRIGHTNESS_THRESHOLD = 175  # boven deze gemiddelde helderheid = lettertegel
+# (De oude vaste RGB-referentiekleuren zijn vervangen door de HSV-classificatie
+# in _classify_cell hieronder -- zie die functie voor de gemeten hue-waarden.
+# HSV is stabieler over screenshots met verschillende helderheid/thema's dan
+# vaste RGB-afstand, zoals bleek toen hetzelfde oranje 2W-vakje in twee
+# screenshots met vaste RGB fout classificeerde maar met HSV consistent bleef.)
 
 
 class BoardReadError(Exception):
@@ -73,16 +68,42 @@ def _patch_median(arr: np.ndarray, y: int, x: int, half: int = 20) -> tuple[int,
     return tuple(int(v) for v in np.median(patch, axis=0))
 
 
+# HSV-gebaseerde classificatie i.p.v. vaste RGB-referentiekleuren. Reden:
+# dezelfde bonuskleur (bv. oranje 2W) kan tussen screenshots flink
+# verschillen in verzadiging/helderheid (schermhelderheid, compressie,
+# donker vs licht thema), maar de HUE (kleurtoon) blijft opvallend
+# stabiel. Empirisch gemeten op twee verschillende screenshots:
+#   TW (rood):    hue ~357-360°
+#   DW (oranje):  hue ~32-33°   (bleef identiek ondanks sat 0.47 vs 0.93!)
+#   TL (blauw):   hue ~205°
+#   DL (groen):   hue ~94°
+#   lettertegel (wit):  hue ~30°, maar sat <0.10 (bijna kleurloos)
+#   lettertegel (geel, net gelegd): hue ~52°, sat ~0.39
 def _classify_cell(rgb: tuple[int, int, int]) -> Bonus | str:
     """Geeft een Bonus-waarde terug, of de string 'LETTER' als het vakje
     een tegel bevat."""
-    brightness = sum(rgb) / 3
-    if brightness > TILE_BRIGHTNESS_THRESHOLD:
+    r, g, b = (v / 255 for v in rgb)
+    h, s, v = colorsys.rgb_to_hsv(r, g, b)
+    hue = h * 360
+
+    # Lettertegels: hoge helderheid, en OFWEL bijna kleurloos (gewone witte
+    # tegel) OFWEL een gele waas (net-gelegd-woord highlight).
+    if v > 0.85 and s < 0.20:
         return "LETTER"
-    return min(
-        BONUS_REF_COLORS,
-        key=lambda k: sum((a - b) ** 2 for a, b in zip(BONUS_REF_COLORS[k], rgb)),
-    )
+    if v > 0.80 and 0.20 < s < 0.60 and 40 <= hue <= 65:
+        return "LETTER"
+
+    if s < 0.12 or v < 0.30:
+        return Bonus.NONE
+    if hue < 15 or hue >= 340:
+        return Bonus.TW
+    if hue < 45:
+        return Bonus.DW
+    if hue < 150:
+        return Bonus.DL
+    if hue < 260:
+        return Bonus.TL
+    return Bonus.NONE
 
 
 def _find_board_top(arr: np.ndarray, cell_size: float, search_range: tuple[int, int]) -> float:
@@ -112,6 +133,20 @@ def _find_board_top(arr: np.ndarray, cell_size: float, search_range: tuple[int, 
                 x = int((c + 0.5) * cell_size)
                 row.append(_classify_cell(_patch_median(arr, y, x)))
             grid.append(row)
+
+        # Een echt bord heeft altijd een flink aandeel gekleurde bonusvakjes
+        # (TW/DW/TL/DL). Een egaal donker gebied (bv. een wachtscherm-header
+        # boven het bord) classificeert bijna alles als 'NONE', en zou zonder
+        # deze check ten onrechte als 'perfect symmetrisch' gezien worden --
+        # elk vakje is dan immers gelijk aan zijn symmetrische tegenhanger,
+        # simpelweg omdat er nergens variatie is. Sluit zulke triviale
+        # (te-egale) uitlijningen daarom expliciet uit.
+        non_none_fraction = sum(
+            1 for row in grid for cell in row if cell not in ("LETTER", Bonus.NONE)
+        ) / 225
+        if non_none_fraction < 0.15:
+            continue
+
         pairs = [
             (grid[r][c], grid[14 - r][14 - c])
             for r in range(15) for c in range(15)

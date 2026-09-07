@@ -117,7 +117,39 @@ def move_to_svg(board: Board, move) -> str:
     return board_to_svg(preview_board, highlight_new=new_cells)
 
 
+def apply_move_and_consume_rack(board: Board, rack: str, move) -> tuple[str, str]:
+    """
+    Past `move` toe op een kopie van `board` en geeft het nieuwe bord
+    (als tekst, klaar om in het invoerveld te plakken) en het bijgewerkte
+    rack terug (de gebruikte letters eraf, blanco's als '?').
 
+    Alleen letters die NIEUW op het bord komen (d.w.z. het vakje was
+    daarvoor leeg) worden van het rack afgehaald -- letters die al op het
+    bord lagen en hergebruikt worden door dit woord tellen niet mee.
+    """
+    from board_ocr import board_to_text  # lokale import om circulaire import te vermijden
+
+    length = len(move.word)
+    if move.horizontal:
+        cells = [(move.row, move.col + i) for i in range(length)]
+    else:
+        cells = [(move.row + i, move.col) for i in range(length)]
+
+    remaining_rack = list(rack.upper())
+    for (r, c), letter in zip(cells, move.word):
+        if board.grid[r][c].letter is None:  # nieuw, dus van het rack
+            if letter in remaining_rack:
+                remaining_rack.remove(letter)
+            elif "?" in remaining_rack:
+                remaining_rack.remove("?")
+            # anders: mismatch (zou niet moeten gebeuren bij een geldige zet) -> negeren
+
+    new_board = board.clone()
+    new_board.place_word(move.word, move.row, move.col, move.horizontal)
+    return board_to_text(new_board), "".join(remaining_rack)
+
+
+if __name__ == "__main__":
     b = Board()
     b.place_word("HUIS", row=7, col=6, horizontal=True)
     svg = board_to_svg(b, highlight_uncertain={(7, 6)})

@@ -32,7 +32,7 @@ from move_generator import generate_moves
 from dictionary_loader import download_opentaal_wordlist
 from strategy import analyze_moves, rack_bingo_potential, find_words_from_letters
 from board_ocr import read_board_from_image, read_rack_from_image, board_to_text, BoardReadError
-from board_svg import board_to_svg, move_to_svg
+from board_svg import board_to_svg, move_to_svg, apply_move_and_consume_rack
 
 st.set_page_config(page_title="Wordfeud AI Assistant", page_icon="🟩", layout="wide")
 
@@ -329,6 +329,8 @@ with tab_moves:
                 )
             else:
                 st.success(f"{len(moves)} geldige zet(ten) gevonden.")
+                st.session_state["_last_moves"] = moves
+                st.session_state["_last_search_board_text"] = board_text
                 for m in moves[:20]:
                     richting = "→ horizontaal" if m.horizontal else "↓ verticaal"
                     with st.container(border=True):
@@ -379,6 +381,75 @@ with tab_moves:
                                 f"wordt vanaf nu nooit meer gesuggereerd."
                             )
                             st.rerun()
+
+    # ------------------------------------------------------------------
+    # Interactieve woord-browser: kies een woord uit de laatste zoekactie,
+    # blader met vorige/volgende door de mogelijke plaatsingen op het bord,
+    # en pas 'm met één klik toe (bord + rack worden automatisch bijgewerkt).
+    # Staat BUITEN het zoek-knop-blok zodat bladeren (dat ook een rerun
+    # veroorzaakt) niet vereist dat je opnieuw op 'Zoek beste zetten' klikt.
+    # ------------------------------------------------------------------
+    last_moves = st.session_state.get("_last_moves")
+    last_moves_board_text = st.session_state.get("_last_search_board_text")
+    if last_moves and last_moves_board_text == board_text:
+        st.divider()
+        st.subheader("🎯 Blader per woord")
+        st.caption(
+            "Kies een woord, blader met ◀/▶ door de mogelijke plekken op "
+            "het bord, en klik op 'Pas toe' zodra je 'm virtueel wilt "
+            "neerleggen -- dat werkt automatisch je bord en rack bij."
+        )
+
+        words_seen = []
+        for m in last_moves:
+            if m.word not in words_seen:
+                words_seen.append(m.word)
+
+        if st.session_state.get("browse_word") not in words_seen:
+            st.session_state.pop("browse_word", None)
+        chosen_word = st.selectbox("Welk woord wil je bekijken?", words_seen, key="browse_word")
+
+        placements_for_word = [m for m in last_moves if m.word == chosen_word]
+
+        browse_key = f"browse_idx_{chosen_word}"
+        st.session_state.setdefault(browse_key, 0)
+        idx = st.session_state[browse_key] % len(placements_for_word)
+        current_move = placements_for_word[idx]
+
+        col_prev, col_pos, col_next = st.columns([1, 2, 1])
+        with col_prev:
+            if st.button("◀ Vorige", disabled=len(placements_for_word) <= 1):
+                st.session_state[browse_key] = (idx - 1) % len(placements_for_word)
+                st.rerun()
+        with col_pos:
+            st.markdown(
+                f"<div style='text-align:center'>Plek {idx + 1} / "
+                f"{len(placements_for_word)}</div>",
+                unsafe_allow_html=True,
+            )
+        with col_next:
+            if st.button("Volgende ▶", disabled=len(placements_for_word) <= 1):
+                st.session_state[browse_key] = (idx + 1) % len(placements_for_word)
+                st.rerun()
+
+        richting = "→ horizontaal" if current_move.horizontal else "↓ verticaal"
+        st.caption(
+            f"Positie ({current_move.row + 1}, {current_move.col + 1}) · "
+            f"{richting} · score {current_move.raw_score}"
+        )
+        st.markdown(move_to_svg(board_preview, current_move), unsafe_allow_html=True)
+
+        if st.button("✅ Pas deze zet toe (werkt bord + rack bij)", type="primary"):
+            new_board_text, new_rack = apply_move_and_consume_rack(
+                board_preview, rack_input, current_move
+            )
+            st.session_state["board_text_input"] = new_board_text
+            st.session_state["rack_text_input"] = new_rack
+            # Oude zoekresultaten horen niet meer bij het bijgewerkte bord.
+            st.session_state.pop("_last_moves", None)
+            st.session_state.pop("_last_search_board_text", None)
+            st.success(f"Zet toegepast! Resterend rack: {new_rack or '(leeg)'}")
+            st.rerun()
 
     st.divider()
     with st.expander("ℹ️ Hoe werkt het masterbrein?"):
