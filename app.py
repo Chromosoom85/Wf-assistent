@@ -104,6 +104,18 @@ tab_moves, tab_lexicon, tab_tiles, tab_about = st.tabs(
 # TAB 0: Zetten zoeken (de echte move-generator)
 # ------------------------------------------------------------------
 with tab_moves:
+    # Wijzigingen die knoppen verderop willen aanbrengen aan widget-waarden
+    # (bord, rack, het woord-invoerveld) mogen NOOIT direct via
+    # st.session_state[key] = ... gebeuren nadat die widget al getekend is
+    # in deze run -- Streamlit staat dat niet toe (StreamlitAPIException).
+    # Daarom zet elke knop zijn wijziging klaar in _pending_updates en
+    # roept st.rerun() aan; HIER, als allereerste in de tab (dus vóór ook
+    # maar één widget is aangemaakt), passen we die wijzigingen alsnog toe.
+    _pending = st.session_state.pop("_pending_updates", None)
+    if _pending:
+        for _key, _value in _pending.items():
+            st.session_state[_key] = _value
+
     if not st.session_state.get("full_dict_loaded", False):
         st.error(
             f"⚠️ **Je gebruikt nog het kleine DEMO-woordenboek "
@@ -157,13 +169,15 @@ with tab_moves:
             with st.spinner("Bord en rack aan het herkennen..."):
                 try:
                     ocr_board, uncertain_board = read_board_from_image(tmp_path)
-                    st.session_state["board_text_input"] = board_to_text(ocr_board)
                     n_uncertain_board = sum(sum(row) for row in uncertain_board)
 
                     ocr_rack, uncertain_rack = read_rack_from_image(tmp_path)
-                    st.session_state["rack_text_input"] = ocr_rack
                     n_uncertain_rack = sum(uncertain_rack)
 
+                    st.session_state["_pending_updates"] = {
+                        "board_text_input": board_to_text(ocr_board),
+                        "rack_text_input": ocr_rack,
+                    }
                     st.session_state["_last_ocr_signature"] = file_signature
                     st.session_state["_last_ocr_message"] = (
                         "success",
@@ -236,6 +250,7 @@ with tab_moves:
         value=True, key="place_is_own_move",
     )
 
+    preview_move = None
     if place_word_input and not board_preview_error:
         r0, c0 = int(place_row) - 1, int(place_col) - 1
         length = len(place_word_input)
@@ -250,7 +265,6 @@ with tab_moves:
                 word=place_word_input, row=r0, col=c0,
                 horizontal=place_horizontal, raw_score=0,
             )
-            # Waarschuw (niet blokkeren) bij een botsing met een andere letter
             cells = (
                 [(r0, c0 + i) for i in range(length)] if place_horizontal
                 else [(r0 + i, c0) for i in range(length)]
@@ -264,25 +278,49 @@ with tab_moves:
                     f"⚠️ Op {len(conflicts)} vakje(s) ligt al een ANDERE letter -- "
                     f"controleer of rij/kolom/richting kloppen."
                 )
-            st.markdown(move_to_svg(board_preview, preview_move), unsafe_allow_html=True)
 
-            if st.button("✅ Zet dit woord op het bord", type="primary"):
-                if place_is_own_move:
-                    new_board_text, new_rack = apply_move_and_consume_rack(
-                        board_preview, st.session_state.get("rack_text_input", ""),
-                        preview_move,
-                    )
-                    st.session_state["rack_text_input"] = new_rack
-                else:
-                    new_board = board_preview.clone()
-                    new_board.place_word(place_word_input, r0, c0, place_horizontal)
-                    new_board_text = board_to_text(new_board)
-                st.session_state["board_text_input"] = new_board_text
-                st.session_state.pop("_last_moves", None)
-                st.session_state.pop("_last_search_board_text", None)
-                st.session_state["place_word_input"] = ""
-                st.success("Woord op het bord gezet!")
-                st.rerun()
+    # --- Eén enkel, altijd-zichtbaar bord: toont de live preview van het
+    # woord dat je aan het intikken bent, of anders gewoon de huidige stand. ---
+    st.markdown("**Bord:**")
+    if board_preview_error:
+        st.warning(f"Kan geen bord tonen: {board_preview_error}")
+    else:
+        st.caption(
+            "⚠️ Toont de STANDAARD-bonuslayout. Jouw echte potje kan een "
+            "willekeurig bord hebben (Wordfeud gebruikt dat vaak) -- de "
+            "gekleurde vakjes komen dan niet 1-op-1 overeen. De letters "
+            "kloppen wel altijd."
+        )
+        if preview_move is not None:
+            st.markdown(move_to_svg(board_preview, preview_move), unsafe_allow_html=True)
+            st.caption("🟡 Goud omrand = waar dit woord komt te liggen.")
+        else:
+            st.markdown(board_to_svg(board_preview), unsafe_allow_html=True)
+
+    if preview_move is not None:
+        if st.button("✅ Zet dit woord op het bord", type="primary"):
+            if place_is_own_move:
+                new_board_text, new_rack = apply_move_and_consume_rack(
+                    board_preview, st.session_state.get("rack_text_input", ""),
+                    preview_move,
+                )
+            else:
+                new_board = board_preview.clone()
+                new_board.place_word(place_word_input, r0, c0, place_horizontal)
+                new_board_text = board_to_text(new_board)
+                new_rack = st.session_state.get("rack_text_input", "")
+            # Nooit direct st.session_state[...] zetten voor een widget die
+            # deze run al getekend is (bv. het tekstveld hierboven) -- dat
+            # geeft een StreamlitAPIException. Zet 'm klaar en herlaad.
+            st.session_state["_pending_updates"] = {
+                "board_text_input": new_board_text,
+                "rack_text_input": new_rack,
+                "place_word_input": "",
+            }
+            st.session_state.pop("_last_moves", None)
+            st.session_state.pop("_last_search_board_text", None)
+            st.success("Woord op het bord gezet!")
+            st.rerun()
 
     with st.expander("⚙️ Geavanceerd: bord direct als tekst bewerken"):
         st.caption(
@@ -297,18 +335,6 @@ with tab_moves:
 
     board_text = st.session_state["board_text_input"]
     board_preview, board_preview_error = parse_board_text(board_text)
-
-    st.markdown("**Visuele weergave van je bord:**")
-    if board_preview_error:
-        st.warning(f"Kan geen preview tonen: {board_preview_error}")
-    else:
-        st.caption(
-            "⚠️ Toont de STANDAARD-bonuslayout. Jouw echte potje kan een "
-            "willekeurig bord hebben (Wordfeud gebruikt dat vaak) -- de "
-            "vakjes hieronder komen dan niet 1-op-1 overeen. De letters "
-            "die je hier ziet staan kloppen wel altijd."
-        )
-        st.markdown(board_to_svg(board_preview), unsafe_allow_html=True)
 
     st.session_state.setdefault("rack_text_input", "")
     rack_input = st.text_input(
@@ -525,8 +551,10 @@ with tab_moves:
             new_board_text, new_rack = apply_move_and_consume_rack(
                 board_preview, rack_input, current_move
             )
-            st.session_state["board_text_input"] = new_board_text
-            st.session_state["rack_text_input"] = new_rack
+            st.session_state["_pending_updates"] = {
+                "board_text_input": new_board_text,
+                "rack_text_input": new_rack,
+            }
             # Oude zoekresultaten horen niet meer bij het bijgewerkte bord.
             st.session_state.pop("_last_moves", None)
             st.session_state.pop("_last_search_board_text", None)
