@@ -66,11 +66,51 @@ if "lexicon" not in st.session_state:
     }
     st.session_state.lexicon = LexiconManager(base_dictionary=demo_dict)
 
+    # Meteen de volledige woordenlijst laden bij het opstarten, zodat je dit
+    # niet elke keer na een herstart van de app handmatig hoeft te doen.
+    # Dit maakt de EERSTE keer laden na een (her)start een paar seconden
+    # trager, maar scheelt daarna een verplichte extra stap voor iedereen.
+    with st.spinner("Volledige Nederlandse woordenlijst laden (eenmalig na herstart)..."):
+        try:
+            _full_words = _load_full_dutch_dictionary()
+            if _full_words:
+                st.session_state.lexicon.set_base_dictionary(_full_words)
+                st.session_state["full_dict_loaded"] = True
+        except Exception:
+            pass  # blijft gewoon op het demo-woordenboek staan; knop in de UI blijft als fallback
+
 if "tracker" not in st.session_state:
     st.session_state.tracker = TileTracker()
 
 lex: LexiconManager = st.session_state.lexicon
 tracker: TileTracker = st.session_state.tracker
+
+
+def _flat_to_board_text(flat: str) -> str:
+    """225 aaneengesloten tekens -> 15 regels van 15 tekens."""
+    flat = (flat + "." * 225)[:225]
+    return "\n".join(flat[i * 15:(i + 1) * 15] for i in range(15))
+
+
+def _board_text_to_flat(text: str) -> str:
+    """15 regels van 15 tekens -> 225 aaneengesloten tekens (voor de URL)."""
+    lines = (text.splitlines() + ["." * 15] * 15)[:15]
+    lines = [l.ljust(15, ".")[:15] for l in lines]
+    return "".join(lines)
+
+
+# ----------------------------------------------------------------------
+# Bord + rack bewaren in de URL (query params), niet alleen in
+# session_state. session_state leeft maar zolang de app-server-instantie
+# draait -- na een herstart (bv. na een nieuwe push, of als de gratis
+# Streamlit Cloud-instantie in slaap is gevallen) is dat leeg, ook al staat
+# de link nog open in je browser. De URL zelf overleeft dat WEL, dus we
+# herstellen bord/rack daaruit zodra ze nog niet in session_state zitten.
+# ----------------------------------------------------------------------
+if "board_text_input" not in st.session_state and "board" in st.query_params:
+    st.session_state["board_text_input"] = _flat_to_board_text(st.query_params["board"])
+if "rack_text_input" not in st.session_state and "rack" in st.query_params:
+    st.session_state["rack_text_input"] = st.query_params["rack"]
 
 
 def parse_board_text(board_text: str) -> tuple[Board | None, str | None]:
@@ -118,10 +158,11 @@ with tab_moves:
 
     if not st.session_state.get("full_dict_loaded", False):
         st.error(
-            f"⚠️ **Je gebruikt nog het kleine DEMO-woordenboek "
-            f"({lex.stats()['base_dictionary']} woorden)** -- daarom vindt "
-            f"de zetgenerator geen goede woorden! Klik hieronder om de "
-            f"volledige Nederlandse woordenlijst (>400.000 woorden) te laden."
+            f"⚠️ **Automatisch laden van de volledige woordenlijst is niet "
+            f"gelukt** -- je zit nog op het kleine DEMO-woordenboek "
+            f"({lex.stats()['base_dictionary']} woorden), vandaar matige "
+            f"suggesties. Waarschijnlijk een tijdelijk netwerkprobleem: "
+            f"klik hieronder om het opnieuw te proberen."
         )
         if st.button("📥 Laad nu de volledige woordenlijst", type="primary"):
             with st.spinner("Bezig met downloaden en verwerken (kan even duren)..."):
@@ -141,71 +182,70 @@ with tab_moves:
                     st.error(f"Downloaden mislukt: {e}")
         st.divider()
 
-    st.subheader("📷 Bord inlezen vanaf screenshot")
-    st.caption(
-        "Upload een screenshot van je Wordfeud-potje (bord + rack zichtbaar) "
-        "-- dit vult het bord en je rack automatisch in zodra je een bestand "
-        "kiest. Controleer het resultaat altijd even voordat je op 'Zoek "
-        "beste zetten' drukt: letterherkenning is een beste-poging, geen garantie."
-    )
-    uploaded_screenshot = st.file_uploader(
-        "Screenshot uploaden (.png of .jpg)", type=["png", "jpg", "jpeg"]
-    )
+    with st.expander("📷 Bord inlezen vanaf screenshot (experimenteel)", expanded=False):
+        st.caption(
+            "Werkt op sommige toestellen niet betrouwbaar. Lukt het niet? "
+            "Deel je screenshot in de Claude-chat -- die leest 'm uit en "
+            "geeft je kant-en-klare tekst voor het geavanceerde bordveld hieronder."
+        )
+        uploaded_screenshot = st.file_uploader(
+            "Screenshot uploaden (.png of .jpg)", type=["png", "jpg", "jpeg"]
+        )
 
-    if uploaded_screenshot is not None:
-        st.image(uploaded_screenshot, caption="Geüpload bestand", width=200)
+        if uploaded_screenshot is not None:
+            st.image(uploaded_screenshot, caption="Geüpload bestand", width=200)
 
-        # Verwerk alleen automatisch als dit een NIEUW bestand is (anders
-        # zou elke rerun -- ook na het aanpassen van rack/bord met de hand
-        # -- de OCR opnieuw draaien en je handmatige correcties overschrijven).
-        file_signature = f"{uploaded_screenshot.name}-{uploaded_screenshot.size}"
-        already_processed = st.session_state.get("_last_ocr_signature") == file_signature
+            # Verwerk alleen automatisch als dit een NIEUW bestand is (anders
+            # zou elke rerun -- ook na het aanpassen van rack/bord met de hand
+            # -- de OCR opnieuw draaien en je handmatige correcties overschrijven).
+            file_signature = f"{uploaded_screenshot.name}-{uploaded_screenshot.size}"
+            already_processed = st.session_state.get("_last_ocr_signature") == file_signature
 
-        if not already_processed:
-            tmp_path = f"/tmp/{uploaded_screenshot.name}"
-            with open(tmp_path, "wb") as f:
-                f.write(uploaded_screenshot.getbuffer())
+            if not already_processed:
+                tmp_path = f"/tmp/{uploaded_screenshot.name}"
+                with open(tmp_path, "wb") as f:
+                    f.write(uploaded_screenshot.getbuffer())
 
-            with st.spinner("Bord en rack aan het herkennen..."):
-                try:
-                    ocr_board, uncertain_board = read_board_from_image(tmp_path)
-                    n_uncertain_board = sum(sum(row) for row in uncertain_board)
+                with st.spinner("Bord en rack aan het herkennen..."):
+                    try:
+                        ocr_board, uncertain_board = read_board_from_image(tmp_path)
+                        n_uncertain_board = sum(sum(row) for row in uncertain_board)
 
-                    ocr_rack, uncertain_rack = read_rack_from_image(tmp_path)
-                    n_uncertain_rack = sum(uncertain_rack)
+                        ocr_rack, uncertain_rack = read_rack_from_image(tmp_path)
+                        n_uncertain_rack = sum(uncertain_rack)
 
-                    st.session_state["_pending_updates"] = {
-                        "board_text_input": board_to_text(ocr_board),
-                        "rack_text_input": ocr_rack,
-                    }
-                    st.session_state["_last_ocr_signature"] = file_signature
-                    st.session_state["_last_ocr_message"] = (
-                        "success",
-                        "✅ Bord en rack ingelezen."
-                        + (
-                            f" ⚠️ {n_uncertain_board} bordvakje(s) en "
-                            f"{n_uncertain_rack} rackletter(s) met lage "
-                            f"betrouwbaarheid -- controleer hieronder even."
-                            if (n_uncertain_board or n_uncertain_rack) else ""
-                        ),
-                    )
-                except BoardReadError as e:
-                    st.session_state["_last_ocr_signature"] = file_signature
-                    st.session_state["_last_ocr_message"] = (
-                        "error", f"Kon de screenshot niet verwerken: {e}"
-                    )
-                except Exception as e:
-                    # Vang ALLES af (bv. ontbrekende tesseract-systeembinary
-                    # op de server) zodat je nooit met een stille, lege
-                    # pagina blijft zitten.
-                    st.session_state["_last_ocr_signature"] = file_signature
-                    st.session_state["_last_ocr_message"] = (
-                        "error",
-                        f"Onverwachte fout tijdens het inlezen: "
-                        f"{type(e).__name__}: {e}. Check 'Manage app' → "
-                        f"logs als dit blijft gebeuren.",
-                    )
-            st.rerun()
+                        st.session_state["_pending_updates"] = {
+                            "board_text_input": board_to_text(ocr_board),
+                            "rack_text_input": ocr_rack,
+                        }
+                        st.session_state["_last_ocr_signature"] = file_signature
+                        st.session_state["_last_ocr_message"] = (
+                            "success",
+                            "✅ Bord en rack ingelezen."
+                            + (
+                                f" ⚠️ {n_uncertain_board} bordvakje(s) en "
+                                f"{n_uncertain_rack} rackletter(s) met lage "
+                                f"betrouwbaarheid -- controleer hieronder even."
+                                if (n_uncertain_board or n_uncertain_rack) else ""
+                            ),
+                        )
+                    except BoardReadError as e:
+                        st.session_state["_last_ocr_signature"] = file_signature
+                        st.session_state["_last_ocr_message"] = (
+                            "error", f"Kon de screenshot niet verwerken: {e}"
+                        )
+                    except Exception as e:
+                        # Vang ALLES af (bv. ontbrekende tesseract-systeembinary
+                        # op de server) zodat je nooit met een stille, lege
+                        # pagina blijft zitten.
+                        st.session_state["_last_ocr_signature"] = file_signature
+                        st.session_state["_last_ocr_message"] = (
+                            "error",
+                            f"Onverwachte fout tijdens het inlezen: "
+                            f"{type(e).__name__}: {e}. Check 'Manage app' → "
+                            f"logs als dit blijft gebeuren.",
+                        )
+                st.rerun()
 
     last_msg = st.session_state.get("_last_ocr_message")
     if last_msg:
@@ -220,34 +260,32 @@ with tab_moves:
     current_board_text = st.session_state["board_text_input"]
     board_preview, board_preview_error = parse_board_text(current_board_text)
 
-    st.markdown("**✍️ Woord op het bord zetten** (aanbevolen — geen getik in een tekstgrid)")
-    st.caption(
-        "Geef aan waar een woord ligt: rij, kolom, richting, en het woord "
-        "zelf. Werkt voor je eigen zetten én voor die van je tegenstander "
-        "-- vink dan 'dit is mijn eigen zet' uit zodat je rack niet wordt "
-        "aangepast."
-    )
+    st.markdown("**✍️ Woord op het bord zetten**")
 
     col_row, col_col, col_dir = st.columns(3)
     with col_row:
         place_row = st.number_input(
-            "Rij (1-15)", min_value=1, max_value=BOARD_SIZE, value=8, key="place_row"
+            "Rij", min_value=1, max_value=BOARD_SIZE, value=8, key="place_row",
+            help="Rijnummer 1-15, van boven naar beneden.",
         )
     with col_col:
         place_col = st.number_input(
-            "Kolom (1-15)", min_value=1, max_value=BOARD_SIZE, value=8, key="place_col"
+            "Kolom", min_value=1, max_value=BOARD_SIZE, value=8, key="place_col",
+            help="Kolomnummer 1-15, van links naar rechts.",
         )
     with col_dir:
         place_horizontal = st.radio(
-            "Richting", ["→ rechts", "↓ omlaag"], key="place_dir"
-        ) == "→ rechts"
+            "Richting", ["→", "↓"], key="place_dir",
+            help="→ = horizontaal (naar rechts), ↓ = verticaal (naar beneden).",
+        ) == "→"
 
     place_word_input = st.text_input(
-        "Woord (gebruik ? voor een blanco tegel)", key="place_word_input"
+        "Woord (? = blanco tegel)", key="place_word_input"
     ).upper()
     place_is_own_move = st.checkbox(
-        "Dit is mijn eigen zet (haal gebruikte letters van mijn rack af)",
+        "Eigen zet (haalt gebruikte letters van je rack af)",
         value=True, key="place_is_own_move",
+        help="Zet uit voor een zet van je tegenstander -- dan blijft je rack ongewijzigd.",
     )
 
     preview_move = None
@@ -285,15 +323,10 @@ with tab_moves:
     if board_preview_error:
         st.warning(f"Kan geen bord tonen: {board_preview_error}")
     else:
-        st.caption(
-            "⚠️ Toont de STANDAARD-bonuslayout. Jouw echte potje kan een "
-            "willekeurig bord hebben (Wordfeud gebruikt dat vaak) -- de "
-            "gekleurde vakjes komen dan niet 1-op-1 overeen. De letters "
-            "kloppen wel altijd."
-        )
+        st.caption("⚠️ Bonusvakjes tonen de STANDAARDlayout; bij een willekeurig bord kunnen kleuren afwijken. Letters kloppen wel altijd.")
         if preview_move is not None:
             st.markdown(move_to_svg(board_preview, preview_move), unsafe_allow_html=True)
-            st.caption("🟡 Goud omrand = waar dit woord komt te liggen.")
+            st.caption("🟡 Goud = hier komt het woord te liggen.")
         else:
             st.markdown(board_to_svg(board_preview), unsafe_allow_html=True)
 
@@ -791,16 +824,19 @@ with tab_about:
         coach-uitleg (aan te zetten in het tabblad "Zetten zoeken").
 
         **Nog niet:**
-        - De volledige OpenTaal-woordenlijst moet je zelf laden via de
-          knop in het tabblad "Woordenboek trainen" (gebeurt niet
-          automatisch bij het opstarten, om de app snel te laten starten).
-        - OCR / automatische bordherkenning vanaf een screenshot (Fase 1,
-          nog te bouwen) -- voorlopig voer je het bord met de hand in.
+        - Screenshot-OCR bestaat (`board_ocr.py`) maar de upload-knop werkt
+          op sommige toestellen niet betrouwbaar (browser/netwerk-
+          gerelateerd). Werkt het niet? Deel je screenshot hier in de chat
+          met Claude, die leest 'm uit en geeft je kant-en-klare tekst.
         - De 2-ply-simulatie gebruikt willekeurige steekproeven uit de
           Stenen-tracker-kansverdeling, geen exacte minimax-boom (dat zou
           met een dictionary van 400.000+ woorden te traag worden voor
           interactief gebruik). Alleen in het exacte eindspel (pot leeg,
           tegenstander-rack bekend) is de tegenzet-berekening exact.
+        - Bord en rack worden in de URL bewaard (zie de adresbalk na een
+          wijziging) zodat een pagina-herlaad of het heropenen van de link
+          je spel herstelt. Bewaar/deel dus de VOLLEDIGE link als je 'm wilt
+          hervatten -- een ingekorte of oude link mist die informatie.
 
         ### Hoe wordt dit een installeerbare PWA?
 
@@ -811,3 +847,15 @@ with tab_about:
         kwestie van een paar regels HTML/JS die Streamlit meestuurt.
         """
     )
+
+# ------------------------------------------------------------------
+# Bord + rack terugschrijven naar de URL (query params), zodat de
+# huidige stand overleeft na een pagina-herlaad of het heropenen van de
+# link -- ook als de app-server ondertussen herstart is. Dit staat
+# helemaal aan het einde zodat het de LAATSTE waarden van deze run pakt,
+# na alles wat de tabs hierboven aan session_state veranderd kunnen hebben.
+# ------------------------------------------------------------------
+if "board_text_input" in st.session_state:
+    st.query_params["board"] = _board_text_to_flat(st.session_state["board_text_input"])
+if "rack_text_input" in st.session_state:
+    st.query_params["rack"] = st.session_state["rack_text_input"]
