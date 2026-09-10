@@ -38,6 +38,16 @@ streamlit run app.py
 
 ## Bekende beperkingen
 
+- **Meerdere potjes tegelijk**: kies/maak een potje bovenaan het scherm.
+  Elk potje bewaart zijn eigen bord, rack én score in de URL. Bij heel
+  veel gelijktijdige potjes kan de link lang worden.
+- **Standscore-bewuste analyse**: vul je eigen score en die van je
+  tegenstander in -- het masterbrein speelt voorzichtiger als je voorstaat
+  en agressiever als je achterstaat (zie `compute_risk_weight` in
+  `strategy.py`). Bij elke zoekactie zie je zowel de veiligste zet
+  (bij jouw stand) als de hoogst scorende, met een 🟢🟡🔴-kleurcode per
+  zet gebaseerd op het risico.
+- De Stenen-tracker is nog gedeeld over alle potjes, niet per potje apart.
 - Het demo-woordenboek is klein (~25 woorden) totdat je op "📥 Laad
   volledige woordenlijst" klikt — de app waarschuwt hier nu prominent
   voor op het "Zetten zoeken"-tabblad zelf.

@@ -320,6 +320,30 @@ def endgame_out_bonus(
 # 5. Coach-modus: korte uitleg in gewone taal, gebaseerd op de velden die
 #    hierboven al berekend zijn.
 # ----------------------------------------------------------------------
+# ----------------------------------------------------------------------
+# 6. Standscore-bewust risicogewicht: sta ver voor, speel voorzichtiger
+#    (hoger risk_weight, straft blootgestelde bonusvakjes zwaarder af).
+#    Sta ver achter, speel agressiever (lager risk_weight, of zelfs bijna
+#    genegeerd -- dan is een gok het waard om terug in de wedstrijd te
+#    komen). De exacte schaal hieronder is met de hand gekozen (niet
+#    wetenschappelijk geijkt), maar de RICHTING is fundamenteel correct
+#    Wordfeud-strategie.
+# ----------------------------------------------------------------------
+def compute_risk_weight(
+    my_score: int, opponent_score: int, base: float = 1.0,
+    points_per_unit: float = 50.0, min_weight: float = 0.1, max_weight: float = 3.0,
+) -> float:
+    """
+    Elke `points_per_unit` punten voorsprong verhoogt het risicogewicht met
+    1.0 (voorzichtiger); elke `points_per_unit` punten achterstand verlaagt
+    het met 1.0 (agressiever). Geclipt tussen min_weight en max_weight zodat
+    het nooit compleet roekeloos (0 of negatief) of onzinnig hoog wordt.
+    """
+    diff = my_score - opponent_score
+    weight = base + (diff / points_per_unit)
+    return max(min_weight, min(max_weight, weight))
+
+
 def explain_move(move: CandidateMove) -> str:
     parts = [f"{move.raw_score} punten"]
 

@@ -22,6 +22,8 @@ ook "installeerbaar" (PWA) maakt.
 
 from __future__ import annotations
 
+import json
+
 import streamlit as st
 
 from lexicon_manager import LexiconManager
@@ -30,9 +32,9 @@ from trie import Trie
 from board_skeleton import Board, BOARD_SIZE, CandidateMove
 from move_generator import generate_moves
 from dictionary_loader import download_opentaal_wordlist
-from strategy import analyze_moves, rack_bingo_potential, find_words_from_letters
+from strategy import analyze_moves, rack_bingo_potential, find_words_from_letters, compute_risk_weight
 from board_ocr import read_board_from_image, read_rack_from_image, board_to_text, BoardReadError
-from board_svg import board_to_svg, move_to_svg, apply_move_and_consume_rack
+from board_svg import board_to_svg, move_to_svg, apply_move_and_consume_rack, safety_gradient_color, safety_badge_html
 
 st.set_page_config(page_title="Wordfeud AI Assistant", page_icon="🟩", layout="wide")
 
@@ -85,6 +87,19 @@ if "tracker" not in st.session_state:
 lex: LexiconManager = st.session_state.lexicon
 tracker: TileTracker = st.session_state.tracker
 
+# Wijzigingen die knoppen willen aanbrengen aan widget-waarden (bord, rack,
+# scores, het actieve potje, ...) mogen NOOIT direct via
+# st.session_state[key] = ... gebeuren nadat die widget al getekend is in
+# deze run -- Streamlit staat dat niet toe (StreamlitAPIException). Daarom
+# zet elke knop zijn wijziging klaar in _pending_updates en roept
+# st.rerun() aan; HIER, als allereerste in het HELE script (dus vóór ook
+# maar één widget is aangemaakt, inclusief de potje-kiezer hieronder),
+# passen we die wijzigingen alsnog toe.
+_pending = st.session_state.pop("_pending_updates", None)
+if _pending:
+    for _key, _value in _pending.items():
+        st.session_state[_key] = _value
+
 
 def _flat_to_board_text(flat: str) -> str:
     """225 aaneengesloten tekens -> 15 regels van 15 tekens."""
@@ -100,17 +115,45 @@ def _board_text_to_flat(text: str) -> str:
 
 
 # ----------------------------------------------------------------------
-# Bord + rack bewaren in de URL (query params), niet alleen in
-# session_state. session_state leeft maar zolang de app-server-instantie
-# draait -- na een herstart (bv. na een nieuwe push, of als de gratis
-# Streamlit Cloud-instantie in slaap is gevallen) is dat leeg, ook al staat
-# de link nog open in je browser. De URL zelf overleeft dat WEL, dus we
-# herstellen bord/rack daaruit zodra ze nog niet in session_state zitten.
+# MEERDERE POTJES tegelijk, elk met een eigen bord/rack/score, bewaard in
+# de URL (query params) als één JSON-blokje. Waarom in de URL en niet
+# (alleen) in session_state: session_state leeft maar zolang de app-
+# server-instantie draait -- na een herstart (nieuwe push, of de gratis
+# Streamlit Cloud-instantie die in slaap valt) is dat leeg, ook al staat
+# de link nog open in je browser. De URL zelf overleeft dat WEL.
+#
+# Beperking: dit deelt de link dus je HELE spelstand. Met heel veel
+# gelijktijdige potjes kan de URL lang worden (elk potje kost ~250
+# tekens) -- voor een handvol potjes ruim binnen de norm, bij tientallen
+# potjes tegelijk zou dat een keer krap kunnen worden.
 # ----------------------------------------------------------------------
-if "board_text_input" not in st.session_state and "board" in st.query_params:
-    st.session_state["board_text_input"] = _flat_to_board_text(st.query_params["board"])
-if "rack_text_input" not in st.session_state and "rack" in st.query_params:
-    st.session_state["rack_text_input"] = st.query_params["rack"]
+def _load_games() -> dict:
+    raw = st.query_params.get("games", "")
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except Exception:
+        return {}
+
+
+def _save_games(games: dict) -> None:
+    st.query_params["games"] = json.dumps(games, separators=(",", ":"))
+
+
+_games = _load_games()
+
+if "current_game_id" not in st.session_state:
+    st.session_state["current_game_id"] = st.query_params.get(
+        "current_game", next(iter(_games), "Potje 1")
+    )
+
+if "board_text_input" not in st.session_state:
+    _cur_game = _games.get(st.session_state["current_game_id"], {})
+    st.session_state["board_text_input"] = _flat_to_board_text(_cur_game.get("board", ""))
+    st.session_state["rack_text_input"] = _cur_game.get("rack", "")
+    st.session_state["my_score_input"] = _cur_game.get("my_score", 0)
+    st.session_state["opp_score_input"] = _cur_game.get("opp_score", 0)
 
 
 def parse_board_text(board_text: str) -> tuple[Board | None, str | None]:
@@ -136,6 +179,62 @@ st.caption(
     "2-ply/eindspel-lookahead, bingo-sturing en coach-uitleg."
 )
 
+# ------------------------------------------------------------------
+# Potje-kiezer: welk potje ben je aan het spelen? Bepaalt welk bord/rack/
+# score de rest van het scherm laat zien. Staat boven de tabs omdat het
+# alles daaronder beïnvloedt.
+# ------------------------------------------------------------------
+_existing_game_ids = sorted(_games.keys())
+_options = _existing_game_ids + ["➕ Nieuw potje..."]
+_current = st.session_state["current_game_id"]
+
+if st.session_state.get("_game_selector") not in _options:
+    st.session_state["_game_selector"] = _current if _current in _options else _options[-1]
+
+col_game, col_my_score, col_opp_score = st.columns([3, 1, 1])
+with col_game:
+    _selected = st.selectbox(
+        "🎮 Potje", _options, key="_game_selector",
+        help="Elk potje bewaart zijn eigen bord, rack en score, ook na een herstart van de app.",
+    )
+with col_my_score:
+    st.session_state.setdefault("my_score_input", 0)
+    st.number_input(
+        "Mijn score", min_value=0, step=1, key="my_score_input",
+        help="Bepaalt hoe voorzichtig/agressief het masterbrein speelt.",
+    )
+with col_opp_score:
+    st.session_state.setdefault("opp_score_input", 0)
+    st.number_input("Tegenstander", min_value=0, step=1, key="opp_score_input")
+
+if _selected == "➕ Nieuw potje...":
+    _new_name = st.text_input(
+        "Naam nieuw potje (bv. naam tegenstander)", key="_new_game_name_input"
+    )
+    if st.button("Potje aanmaken") and _new_name.strip():
+        st.session_state["_pending_updates"] = {
+            "current_game_id": _new_name.strip(),
+            "board_text_input": "\n".join(["." * BOARD_SIZE] * BOARD_SIZE),
+            "rack_text_input": "",
+            "my_score_input": 0,
+            "opp_score_input": 0,
+        }
+        st.rerun()
+elif _selected != _current:
+    # Gebruiker koos een ANDER, al bestaand potje -> laad diens data.
+    _switch_to = _games.get(_selected, {})
+    st.session_state["_pending_updates"] = {
+        "current_game_id": _selected,
+        "board_text_input": _flat_to_board_text(_switch_to.get("board", "")),
+        "rack_text_input": _switch_to.get("rack", ""),
+        "my_score_input": _switch_to.get("my_score", 0),
+        "opp_score_input": _switch_to.get("opp_score", 0),
+    }
+    st.rerun()
+
+st.caption(f"Actief potje: **{_current}**" + (f" ({len(_existing_game_ids)} potje(s) opgeslagen)" if _existing_game_ids else ""))
+st.divider()
+
 tab_moves, tab_lexicon, tab_tiles, tab_about = st.tabs(
     ["🧠 Zetten zoeken", "📖 Woordenboek trainen", "🎲 Stenen-tracker", "ℹ️ Over dit scherm"]
 )
@@ -144,18 +243,6 @@ tab_moves, tab_lexicon, tab_tiles, tab_about = st.tabs(
 # TAB 0: Zetten zoeken (de echte move-generator)
 # ------------------------------------------------------------------
 with tab_moves:
-    # Wijzigingen die knoppen verderop willen aanbrengen aan widget-waarden
-    # (bord, rack, het woord-invoerveld) mogen NOOIT direct via
-    # st.session_state[key] = ... gebeuren nadat die widget al getekend is
-    # in deze run -- Streamlit staat dat niet toe (StreamlitAPIException).
-    # Daarom zet elke knop zijn wijziging klaar in _pending_updates en
-    # roept st.rerun() aan; HIER, als allereerste in de tab (dus vóór ook
-    # maar één widget is aangemaakt), passen we die wijzigingen alsnog toe.
-    _pending = st.session_state.pop("_pending_updates", None)
-    if _pending:
-        for _key, _value in _pending.items():
-            st.session_state[_key] = _value
-
     if not st.session_state.get("full_dict_loaded", False):
         st.error(
             f"⚠️ **Automatisch laden van de volledige woordenlijst is niet "
@@ -438,6 +525,10 @@ with tab_moves:
     if st.button("🔍 Zoek beste zetten", type="primary"):
         board, parse_error = parse_board_text(board_text)
 
+        my_score = st.session_state.get("my_score_input", 0)
+        opp_score = st.session_state.get("opp_score_input", 0)
+        dynamic_risk_weight = compute_risk_weight(my_score, opp_score)
+
         if parse_error:
             st.error(parse_error)
         elif not rack_input.strip():
@@ -451,7 +542,7 @@ with tab_moves:
                 ):
                     moves = analyze_moves(
                         board, rack_input, trie, tracker,
-                        top_k=8, n_samples=n_samples,
+                        top_k=8, n_samples=n_samples, risk_weight=dynamic_risk_weight,
                     )
                 if tracker.is_bag_empty():
                     st.caption(
@@ -460,7 +551,7 @@ with tab_moves:
                     )
             else:
                 with st.spinner("Bezig met zoeken..."):
-                    moves = generate_moves(board, rack_input, trie)
+                    moves = generate_moves(board, rack_input, trie, risk_weight=dynamic_risk_weight)
 
             if not moves:
                 st.info(
@@ -472,7 +563,8 @@ with tab_moves:
                 st.success(f"{len(moves)} geldige zet(ten) gevonden.")
                 st.session_state["_last_moves"] = moves
                 st.session_state["_last_search_board_text"] = board_text
-                for m in moves[:20]:
+
+                def _render_move_card(m, badge_extra: str = ""):
                     richting = "→ horizontaal" if m.horizontal else "↓ verticaal"
                     with st.container(border=True):
                         col1, col2 = st.columns([3, 1])
@@ -481,13 +573,15 @@ with tab_moves:
                             if m.is_bingo:
                                 titel += " 🎉 BINGO"
                             st.markdown(titel)
+                            st.markdown(
+                                safety_badge_html(m.exposure_score) + badge_extra,
+                                unsafe_allow_html=True,
+                            )
                             st.caption(
                                 f"Positie ({m.row + 1}, {m.col + 1}) · {richting}"
                             )
                             if m.cross_words:
-                                st.caption(
-                                    "Kruiswoorden: " + ", ".join(m.cross_words)
-                                )
+                                st.caption("Kruiswoorden: " + ", ".join(m.cross_words))
                             if m.explanation:
                                 st.caption("🧭 " + m.explanation)
                             with st.expander("📍 Toon op bord"):
@@ -499,18 +593,13 @@ with tab_moves:
                         with col2:
                             st.metric("Score", m.raw_score)
                             if deep_analysis:
-                                st.metric(
-                                    "Masterbrein-waarde",
-                                    f"{m.advanced_value():.1f}",
-                                )
+                                st.metric("Masterbrein-waarde", f"{m.advanced_value(dynamic_risk_weight):.1f}")
                                 if m.expected_opponent_response > 0:
-                                    st.caption(
-                                        f"Verw. tegenzet: {m.expected_opponent_response:.0f}"
-                                    )
+                                    st.caption(f"Verw. tegenzet: {m.expected_opponent_response:.0f}")
                                 if m.endgame_bonus > 0:
                                     st.caption(f"Eindspelbonus: +{m.endgame_bonus}")
                             else:
-                                st.metric("Safety Index", f"{m.safety_index():.1f}")
+                                st.metric("Safety Index", f"{m.safety_index(dynamic_risk_weight):.1f}")
 
                         if st.button(
                             "🚫 Dit woord wordt niet geaccepteerd",
@@ -522,6 +611,65 @@ with tab_moves:
                                 f"wordt vanaf nu nooit meer gesuggereerd."
                             )
                             st.rerun()
+
+                # ------------------------------------------------------------
+                # Aanbevolen voor jouw situatie: de zet die het beste past bij
+                # de huidige stand (safest_pick, al score-bewust gesorteerd),
+                # PLUS -- als die afwijkt -- de hoogst scorende zet als
+                # alternatief, zodat je zelf altijd de knoop kunt doorhakken.
+                # ------------------------------------------------------------
+                st.markdown("### 🎯 Aanbevolen voor jouw situatie")
+                score_diff = my_score - opp_score
+                threshold = 20
+                if score_diff > threshold:
+                    st.info(
+                        f"📈 Je staat **{score_diff} punten voor** — de veilige "
+                        f"zet hieronder ligt voor de hand, tenzij het "
+                        f"hoogstscorende alternatief het risico duidelijk waard is."
+                    )
+                elif score_diff < -threshold:
+                    st.info(
+                        f"📉 Je staat **{-score_diff} punten achter** — een "
+                        f"risicovollere zet kan de moeite waard zijn om terug "
+                        f"in de wedstrijd te komen."
+                    )
+                else:
+                    st.info(
+                        "⚖️ De stand is ongeveer gelijk — een goede balans "
+                        "tussen score en veiligheid."
+                    )
+
+                safest_pick = moves[0]  # al gesorteerd met het standscore-bewuste risicogewicht
+                highest_score_pick = max(moves, key=lambda m: m.raw_score)
+                same_move = (
+                    safest_pick.word == highest_score_pick.word
+                    and safest_pick.row == highest_score_pick.row
+                    and safest_pick.col == highest_score_pick.col
+                    and safest_pick.horizontal == highest_score_pick.horizontal
+                )
+
+                _render_move_card(
+                    safest_pick,
+                    badge_extra=" &nbsp; ⭐ <b>aanbevolen voor deze stand</b>" if not same_move else "",
+                )
+                if same_move:
+                    st.caption(
+                        "✅ Dit is toevallig ook meteen de hoogst scorende "
+                        "zet — geen lastige keuze nu."
+                    )
+                else:
+                    st.markdown("**Of ga toch voor de hoogste score:**")
+                    _render_move_card(highest_score_pick, badge_extra=" &nbsp; 🚀 <b>hoogst scorend</b>")
+
+                st.divider()
+                st.markdown("### Alle gevonden zetten")
+                st.caption(
+                    "🟢 veilig · 🟡 gemiddeld · 🔴 risicovol -- gebaseerd op de "
+                    "kansgewogen kans dat de tegenstander een bonusvakje benut "
+                    "dat deze zet openlegt."
+                )
+                for m in moves[:20]:
+                    _render_move_card(m)
 
     # ------------------------------------------------------------------
     # Interactieve woord-browser: kies een woord uit de laatste zoekactie,
@@ -833,10 +981,15 @@ with tab_about:
           met een dictionary van 400.000+ woorden te traag worden voor
           interactief gebruik). Alleen in het exacte eindspel (pot leeg,
           tegenstander-rack bekend) is de tegenzet-berekening exact.
-        - Bord en rack worden in de URL bewaard (zie de adresbalk na een
+        - Meerdere potjes tegelijk (bovenaan de kiezer) + bord/rack/score
+          worden per potje in de URL bewaard (zie de adresbalk na een
           wijziging) zodat een pagina-herlaad of het heropenen van de link
-          je spel herstelt. Bewaar/deel dus de VOLLEDIGE link als je 'm wilt
-          hervatten -- een ingekorte of oude link mist die informatie.
+          je potjes herstelt. Bewaar/deel dus de VOLLEDIGE link als je 'm
+          wilt hervatten -- een ingekorte of oude link mist die informatie.
+          Bij heel veel gelijktijdige potjes kan de link lang worden.
+        - De Stenen-tracker is nog gedeeld over alle potjes (niet per
+          potje apart) -- prima voor één potje tegelijk bijhouden, maar
+          nog geen aparte stenen-stand per tegenstander.
 
         ### Hoe wordt dit een installeerbare PWA?
 
@@ -849,13 +1002,18 @@ with tab_about:
     )
 
 # ------------------------------------------------------------------
-# Bord + rack terugschrijven naar de URL (query params), zodat de
+# Actief potje (bord + rack + score) terugschrijven naar de URL, zodat de
 # huidige stand overleeft na een pagina-herlaad of het heropenen van de
 # link -- ook als de app-server ondertussen herstart is. Dit staat
 # helemaal aan het einde zodat het de LAATSTE waarden van deze run pakt,
 # na alles wat de tabs hierboven aan session_state veranderd kunnen hebben.
 # ------------------------------------------------------------------
 if "board_text_input" in st.session_state:
-    st.query_params["board"] = _board_text_to_flat(st.session_state["board_text_input"])
-if "rack_text_input" in st.session_state:
-    st.query_params["rack"] = st.session_state["rack_text_input"]
+    _games[st.session_state["current_game_id"]] = {
+        "board": _board_text_to_flat(st.session_state["board_text_input"]),
+        "rack": st.session_state.get("rack_text_input", ""),
+        "my_score": st.session_state.get("my_score_input", 0),
+        "opp_score": st.session_state.get("opp_score_input", 0),
+    }
+    _save_games(_games)
+    st.query_params["current_game"] = st.session_state["current_game_id"]

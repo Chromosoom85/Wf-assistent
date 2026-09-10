@@ -149,6 +149,40 @@ def apply_move_and_consume_rack(board: Board, rack: str, move) -> tuple[str, str
     return board_to_text(new_board), "".join(remaining_rack)
 
 
+def safety_gradient_color(exposure: float, low: float = 0.0, high: float = 25.0) -> str:
+    """
+    Groen (veilig) -> geel -> rood (risicovol) op basis van de kansgewogen
+    exposure_score (verwachte punten die de tegenstander op blootgestelde
+    bonusvakjes kan scoren). 0 punten = volledig groen, `high` of meer =
+    volledig rood. De exacte grens (25) is met de hand gekozen als
+    "een TW met een gemiddelde letter erop" -- geen wetenschappelijke
+    ijking, maar een redelijk gevoel voor wat 'veel' risico is.
+    """
+    t = max(0.0, min(1.0, (exposure - low) / (high - low))) if high > low else 0.0
+    # Vlakke-UI-kleuren: groen #2ecc71 -> geel #f1c40f -> rood #e74c3c
+    stops = [(0.0, (46, 204, 113)), (0.5, (241, 196, 15)), (1.0, (231, 76, 60))]
+    for (t0, c0), (t1, c1) in zip(stops, stops[1:]):
+        if t0 <= t <= t1:
+            frac = (t - t0) / (t1 - t0) if t1 > t0 else 0.0
+            r = round(c0[0] + frac * (c1[0] - c0[0]))
+            g = round(c0[1] + frac * (c1[1] - c0[1]))
+            b = round(c0[2] + frac * (c1[2] - c0[2]))
+            return f"#{r:02x}{g:02x}{b:02x}"
+    return "#e74c3c"
+
+
+def safety_badge_html(exposure: float) -> str:
+    """Klein gekleurd label ('veilig'/'gemiddeld'/'risicovol') voor in een
+    zetkaart, als visuele aanvulling op de numerieke Safety Index."""
+    color = safety_gradient_color(exposure)
+    label = "veilig" if exposure < 5 else "risicovol" if exposure > 18 else "gemiddeld"
+    return (
+        f'<span style="background:{color};color:white;padding:2px 10px;'
+        f'border-radius:12px;font-size:0.8em;font-weight:600;'
+        f'display:inline-block;">{label}</span>'
+    )
+
+
 if __name__ == "__main__":
     b = Board()
     b.place_word("HUIS", row=7, col=6, horizontal=True)
