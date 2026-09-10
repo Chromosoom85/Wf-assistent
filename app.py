@@ -564,7 +564,7 @@ with tab_moves:
                 st.session_state["_last_moves"] = moves
                 st.session_state["_last_search_board_text"] = board_text
 
-                def _render_move_card(m, badge_extra: str = ""):
+                def _render_move_card(m, badge_extra: str = "", key_suffix: str = "list"):
                     richting = "→ horizontaal" if m.horizontal else "↓ verticaal"
                     with st.container(border=True):
                         col1, col2 = st.columns([3, 1])
@@ -601,9 +601,13 @@ with tab_moves:
                             else:
                                 st.metric("Safety Index", f"{m.safety_index(dynamic_risk_weight):.1f}")
 
+                        # key_suffix zorgt dat dezelfde zet (bv. tegelijk de
+                        # 'veiligste' EN gewoon onderdeel van de volledige
+                        # lijst) nooit twee knoppen met dezelfde key oplevert
+                        # -- dat gaf eerder een StreamlitDuplicateElementKey-crash.
                         if st.button(
                             "🚫 Dit woord wordt niet geaccepteerd",
-                            key=f"reject_{m.word}_{m.row}_{m.col}_{m.horizontal}",
+                            key=f"reject_{key_suffix}_{m.word}_{m.row}_{m.col}_{m.horizontal}",
                         ):
                             lex.reject_word(m.word)
                             st.warning(
@@ -651,6 +655,7 @@ with tab_moves:
                 _render_move_card(
                     safest_pick,
                     badge_extra=" &nbsp; ⭐ <b>aanbevolen voor deze stand</b>" if not same_move else "",
+                    key_suffix="featured_safe",
                 )
                 if same_move:
                     st.caption(
@@ -659,7 +664,11 @@ with tab_moves:
                     )
                 else:
                     st.markdown("**Of ga toch voor de hoogste score:**")
-                    _render_move_card(highest_score_pick, badge_extra=" &nbsp; 🚀 <b>hoogst scorend</b>")
+                    _render_move_card(
+                        highest_score_pick,
+                        badge_extra=" &nbsp; 🚀 <b>hoogst scorend</b>",
+                        key_suffix="featured_score",
+                    )
 
                 st.divider()
                 st.markdown("### Alle gevonden zetten")
@@ -668,8 +677,8 @@ with tab_moves:
                     "kansgewogen kans dat de tegenstander een bonusvakje benut "
                     "dat deze zet openlegt."
                 )
-                for m in moves[:20]:
-                    _render_move_card(m)
+                for _idx, m in enumerate(moves[:20]):
+                    _render_move_card(m, key_suffix=f"list{_idx}")
 
     # ------------------------------------------------------------------
     # Interactieve woord-browser: kies een woord uit de laatste zoekactie,
