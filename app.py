@@ -68,6 +68,17 @@ if "lexicon" not in st.session_state:
     }
     st.session_state.lexicon = LexiconManager(base_dictionary=demo_dict)
 
+    # Black-/whitelist herstellen vanuit de URL (zie de sync helemaal
+    # onderaan dit bestand) -- niet vertrouwen op de lokale schijf van de
+    # server, want die wordt bij elke herstart/redeploy gewist. Zonder dit
+    # zou de 🚫-afwijsknop in de praktijk nauwelijks iets uithalen.
+    for _w in st.query_params.get("blacklist", "").split(","):
+        if _w:
+            st.session_state.lexicon.reject_word(_w)
+    for _w in st.query_params.get("whitelist", "").split(","):
+        if _w:
+            st.session_state.lexicon.add_to_whitelist(_w)
+
     # Meteen de volledige woordenlijst laden bij het opstarten, zodat je dit
     # niet elke keer na een herstart van de app handmatig hoeft te doen.
     # Dit maakt de EERSTE keer laden na een (her)start een paar seconden
@@ -603,16 +614,40 @@ with tab_moves:
 
                         # key_suffix zorgt dat dezelfde zet (bv. tegelijk de
                         # 'veiligste' EN gewoon onderdeel van de volledige
-                        # lijst) nooit twee knoppen met dezelfde key oplevert
+                        # lijst) nooit twee widgets met dezelfde key oplevert
                         # -- dat gaf eerder een StreamlitDuplicateElementKey-crash.
-                        if st.button(
-                            "🚫 Dit woord wordt niet geaccepteerd",
-                            key=f"reject_{key_suffix}_{m.word}_{m.row}_{m.col}_{m.horizontal}",
+                        _reject_options = [m.word] + list(m.cross_words)
+                        _reject_key_base = f"{key_suffix}_{m.word}_{m.row}_{m.col}_{m.horizontal}"
+                        if len(_reject_options) > 1:
+                            _to_reject = st.multiselect(
+                                "Woord(en) hier afwijzen",
+                                _reject_options,
+                                key=f"reject_select_{_reject_key_base}",
+                                help=(
+                                    "Vaak is niet het hoofdwoord het probleem, "
+                                    "maar een los kruiswoordje (bv. een "
+                                    "afkorting die Wordfeud niet accepteert) "
+                                    "-- selecteer specifiek dát woord."
+                                ),
+                            )
+                        else:
+                            _to_reject = (
+                                [m.word] if st.checkbox(
+                                    f"🚫 '{m.word}' afwijzen",
+                                    key=f"reject_check_{_reject_key_base}",
+                                ) else []
+                            )
+
+                        if _to_reject and st.button(
+                            "Geselecteerde woord(en) afwijzen",
+                            key=f"reject_btn_{_reject_key_base}",
                         ):
-                            lex.reject_word(m.word)
+                            for _w in _to_reject:
+                                lex.reject_word(_w)
                             st.warning(
-                                f"'{m.word}' toegevoegd aan blacklist — "
-                                f"wordt vanaf nu nooit meer gesuggereerd."
+                                f"Afgewezen: {', '.join(_to_reject)} — "
+                                f"worden vanaf nu nooit meer gesuggereerd "
+                                f"(ook niet als kruiswoord bij een andere zet)."
                             )
                             st.rerun()
 
@@ -1026,3 +1061,12 @@ if "board_text_input" in st.session_state:
     }
     _save_games(_games)
     st.query_params["current_game"] = st.session_state["current_game_id"]
+
+# Black-/whitelist terugschrijven naar de URL -- zelfde reden als hierboven:
+# de lokale schijf van de server overleeft geen herstart, de URL wel. Dit
+# zorgt dat de 🚫-afwijsknop (en handmatig toegevoegde whitelist-woorden)
+# blijvend effect hebben, ook na een redeploy.
+if lex.blacklist:
+    st.query_params["blacklist"] = ",".join(sorted(lex.blacklist))
+if lex.whitelist:
+    st.query_params["whitelist"] = ",".join(sorted(lex.whitelist))
