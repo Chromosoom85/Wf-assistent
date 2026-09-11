@@ -612,6 +612,20 @@ with tab_moves:
                             else:
                                 st.metric("Safety Index", f"{m.safety_index(dynamic_risk_weight):.1f}")
 
+                        _apply_key = f"apply_{key_suffix}_{m.word}_{m.row}_{m.col}_{m.horizontal}"
+                        if st.button("✅ Zet dit woord op het bord", key=_apply_key, type="primary"):
+                            _new_board_text, _new_rack = apply_move_and_consume_rack(
+                                board_preview, rack_input, m
+                            )
+                            st.session_state["_pending_updates"] = {
+                                "board_text_input": _new_board_text,
+                                "rack_text_input": _new_rack,
+                            }
+                            st.session_state.pop("_last_moves", None)
+                            st.session_state.pop("_last_search_board_text", None)
+                            st.success(f"'{m.word}' op het bord gezet! Resterend rack: {_new_rack or '(leeg)'}")
+                            st.rerun()
+
                         # key_suffix zorgt dat dezelfde zet (bv. tegelijk de
                         # 'veiligste' EN gewoon onderdeel van de volledige
                         # lijst) nooit twee widgets met dezelfde key oplevert
