@@ -953,6 +953,20 @@ with tab_tiles:
         "het rack van je tegenstander exact afleiden."
     )
 
+    st.session_state.setdefault("opponent_rack_size_input", 7)
+    st.number_input(
+        "Aantal tegels dat de tegenstander NU vasthoudt",
+        min_value=0, max_value=7, step=1, key="opponent_rack_size_input",
+        help=(
+            "Meestal 7, maar minder vlak na een bingo (voordat ze weer "
+            "bijtrekken) of tegen het einde van de pot. Nodig om precies te "
+            "bepalen wanneer de pot écht leeg is -- 'nog onverdeeld' hoeft "
+            "namelijk niet exact 0 te worden, alleen precies zo klein als "
+            "wat de tegenstander vasthoudt."
+        ),
+    )
+    tracker.opponent_rack_size = st.session_state["opponent_rack_size_input"]
+
     col_board, col_rack = st.columns(2)
     with col_board:
         board_letters = st.text_input(

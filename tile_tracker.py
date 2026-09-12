@@ -55,11 +55,22 @@ class TileTracker:
     )
     points: dict[str, int] = field(default_factory=lambda: dict(DUTCH_TILE_POINTS))
 
-    # Wat WIJ zelf zeker weten dat op ons eigen rack ligt (blijft NIET in
-    # 'remaining' zitten aftrekken via mark_seen, maar wordt apart bijgehouden
-    # zodat we het onderscheid met "in de pot" kunnen maken voor de eindspel-som).
+    # Wat WIJ zelf zeker weten dat op ons eigen rack ligt. Dit is een
+    # SUBSET-administratie bovenop 'remaining' (puur boekhouding/debug om
+    # onderscheid te kunnen maken tussen "op mijn rack" en "op het bord"),
+    # GEEN aparte aftrekpost -- mark_seen() haalt een steen sowieso al uit
+    # 'remaining' zodra hij ergens zichtbaar wordt, ongeacht de locatie.
     own_rack: Counter = field(default_factory=Counter)
     on_board: Counter = field(default_factory=Counter)
+
+    # Hoeveel tegels de tegenstander OP DIT MOMENT vasthoudt. Nodig om te
+    # bepalen wanneer de pot écht leeg is: dat is namelijk NIET wanneer
+    # remaining_in_bag() precies 0 is, maar wanneer alle nog onbekende
+    # tegels precies passen in de hand van de tegenstander (normaal 7,
+    # maar minder na een net gespeelde bingo, vlak voor ze bijtrekken).
+    # Standaard 7 (de normale situatie); pas 'm aan zodra je weet dat de
+    # tegenstander met minder tegels zit.
+    opponent_rack_size: int = 7
 
     # ------------------------------------------------------------------
     def mark_seen(self, letter: str, count: int = 1, location: str = "board") -> None:
@@ -93,33 +104,68 @@ class TileTracker:
         else:
             self.on_board[letter] -= count
 
+    def move_rack_to_board(self, letter: str, count: int = 1) -> None:
+        """
+        Een tegel die op je EIGEN rack lag, wordt nu op het bord gelegd
+        (je speelt 'm). Dit verandert NIETS aan hoeveel stenen nog onbekend
+        zijn (hij was al 'gezien') -- alleen de boekhouding van WELKE
+        zichtbare plek hij inneemt verschuift van rack naar bord. Gebruik
+        dit i.p.v. los unmark()+mark_seen(), zodat deze transitie altijd in
+        één keer en correct gebeurt (bv. bij het toepassen van een zet).
+        """
+        letter = letter.upper()
+        if self.own_rack[letter] < count:
+            raise ValueError(
+                f"Kan niet {count}x '{letter}' van rack naar bord verplaatsen: "
+                f"slechts {self.own_rack[letter]} op het rack bekend."
+            )
+        self.own_rack[letter] -= count
+        self.on_board[letter] += count
+        # 'remaining' blijft ongewijzigd: de steen was al gezien (op rack),
+        # en blijft gezien (nu op bord) -- nooit opnieuw "onbekend".
+
     # ------------------------------------------------------------------
     def remaining_in_bag(self) -> int:
         """
-        Totaal aantal stenen dat nog ONVERDEELD is over pot + tegenstander-rack.
-        Dit is: alles wat nog 'remaining' is, MINUS wat wij zelf op ons eigen
-        rack hebben (want dat weten we al zeker, dat zit niet meer in de pot).
+        Totaal aantal stenen dat nog ONVERDEELD is over pot + tegenstander-
+        rack. 'remaining' registreert AL exact dit aantal: mark_seen() haalt
+        een steen er sowieso uit zodra hij ergens zichtbaar wordt (rack √≥f
+        bord), dus een aparte aftrek van own_rack hier zou diezelfde stenen
+        een tweede keer aftrekken. (Dat gebeurde eerder ook echt: bij een
+        rack van 7 stenen gaf dat toevallig geen zichtbaar probleem omdat
+        beide spelers meestal evenveel stenen op hun rack hebben, maar bij
+        een onvolledig rack -- bv. vlak na een bingo, of tegen het einde van
+        de pot -- gaf het een structureel verkeerde uitkomst.)
         """
-        return sum(self.remaining.values()) - sum(self.own_rack.values())
+        return sum(self.remaining.values())
 
     def is_bag_empty(self) -> bool:
-        return self.remaining_in_bag() <= 0
+        """
+        De POT (niet: pot+tegenstanderrack) is leeg zodra alle nog
+        onbekende tegels precies passen in de hand van de tegenstander --
+        dus als remaining_in_bag() <= opponent_rack_size, NIET simpelweg
+        als remaining_in_bag() == 0. (Die laatste aanname klopte in eerdere
+        tests toevallig steeds, puur omdat de tegenstander daar ook telkens
+        7 tegels had -- bij een ander aantal geeft dat een verkeerde uitkomst.)
+        """
+        return self.remaining_in_bag() <= self.opponent_rack_size
 
     def deduce_opponent_rack(self) -> Counter | None:
         """
-        Zodra de pot leeg is (remaining_in_bag() == 0), staat het exacte
-        multiset van de tegenstander vast: het is precies 'remaining' zelf,
-        want remaining bevat op dat punt alleen nog de letters die NERGENS
-        zichtbaar zijn (niet op bord, niet op ons rack) -- en die kunnen dan
-        alleen nog bij de tegenstander liggen.
+        Zodra de pot leeg is EN het aantal nog onbekende tegels exact
+        overeenkomt met de bekende rackgrootte van de tegenstander, staat
+        hun exacte multiset vast: het is precies 'remaining' zelf.
 
         Retourneert None als de pot nog niet leeg is (dan is deductie nog
-        niet 100% zeker, hooguit een kansinschatting -- zie estimate_opponent_probabilities).
+        niet 100% zeker, hooguit een kansinschatting -- zie
+        estimate_opponent_probabilities), OF als remaining_in_bag() kleiner
+        is dan opponent_rack_size (inconsistente/onvolledige data -- dan is
+        een betrouwbare deductie niet mogelijk).
         """
         if not self.is_bag_empty():
             return None
-        # Alles wat nog 'remaining' is (en dus niet ons eigen rack is)
-        # moet bij de tegenstander liggen.
+        if self.remaining_in_bag() != self.opponent_rack_size:
+            return None
         opponent = Counter({k: v for k, v in self.remaining.items() if v > 0})
         return opponent
 
@@ -132,13 +178,11 @@ class TileTracker:
         total_unknown = self.remaining_in_bag()
         if total_unknown <= 0:
             return {}
-        pot_only = Counter(self.remaining)
-        # own_rack is al zeker, dus die tellen niet mee als "onbekend"
-        for letter, n in self.own_rack.items():
-            pot_only[letter] -= n
+        # 'remaining' sluit own_rack al uit (zie remaining_in_bag) -- geen
+        # aparte correctie hier nodig.
         return {
             letter: count / total_unknown
-            for letter, count in pot_only.items()
+            for letter, count in self.remaining.items()
             if count > 0
         }
 
